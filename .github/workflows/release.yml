@@ -10,10 +10,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        runtime: [linux-x64, win-x64, osx-x64] # Build for multiple platforms if you want
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -21,27 +17,29 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'  # adjust if needed
+          dotnet-version: '8.0.x'
 
       - name: Restore dependencies
         run: dotnet restore
+        working-directory: CardDavToYealinkAddressBook/CardDavToYealinkAddressBook
 
       - name: Publish self-contained
-        run: dotnet publish -c Release -r ${{ matrix.runtime }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+        run: dotnet publish -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+        working-directory: CardDavToYealinkAddressBook/CardDavToYealinkAddressBook
 
       - name: Create artifact package
         run: |
-          mkdir -p artifacts/${{ matrix.runtime }}
-          cp -r bin/Release/net8.0/${{ matrix.runtime }}/publish/* artifacts/${{ matrix.runtime }}/
-          cd artifacts/${{ matrix.runtime }}
-          tar -czf ../../${{ matrix.runtime }}.tar.gz .
+          mkdir -p artifacts/linux-x64
+          cp -r CardDavToYealinkAddressBook/CardDavToYealinkAddressBook/bin/Release/net8.0/linux-x64/publish/* artifacts/linux-x64/
+          cd artifacts/linux-x64
+          tar -czf ../../CardDavToYealinkAddressBook-linux-x64.tar.gz .
           cd ../../
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.runtime }}
-          path: ${{ matrix.runtime }}.tar.gz
+          name: linux-x64
+          path: CardDavToYealinkAddressBook-linux-x64.tar.gz
 
   release:
     needs: build
