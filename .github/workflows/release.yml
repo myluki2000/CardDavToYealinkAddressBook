@@ -32,7 +32,7 @@ jobs:
       - name: Create artifact package
         run: |
           mkdir -p artifacts/${{ matrix.runtime }}
-          cp -r bin/Release/net8.0/${{ matrix.runtime }}/publish/* artifacts/${{ matrix.runtime }}/
+          cp -r CardDavToYealinkAddressBook/bin/Release/net8.0/${{ matrix.runtime }}/publish/* artifacts/${{ matrix.runtime }}/
           cd artifacts/${{ matrix.runtime }}
           tar -czf ../../${{ matrix.runtime }}.tar.gz .
           cd ../../
