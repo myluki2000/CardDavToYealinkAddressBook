@@ -1,10 +1,11 @@
-﻿
-using System.CommandLine;
-using System.Net;
-using FolkerKinzel.VCards;
+﻿using FolkerKinzel.VCards;
 using FolkerKinzel.VCards.Enums;
 using FolkerKinzel.VCards.Models.Properties;
+using System.Collections.Concurrent;
+using System.Net;
+using System.Text.Json;
 using WebDav;
+using static CardDavToYealinkAddressBook.Program;
 
 namespace CardDavToYealinkAddressBook;
 
@@ -12,109 +13,141 @@ internal class Program
 {
     public static async Task Main(string[] args)
     {
-        Argument<string> outputFileArg = new("output-file")
-        {
-            Description = "The output file path for the Yealink phonebook XML file."
-        };
+        Configuration config = JsonSerializer.Deserialize<Configuration>(await File.ReadAllTextAsync(args[0]))!;
 
-        Option<string> serverOption = new("--server", "-s")
-        {
-            Description = "The CardDAV server URL.",
-        };
+        Console.WriteLine($"Connecting to server {config.Server}...");
+        DateTime startTime = DateTime.Now;
 
-        Option<string> usernameOption = new("--username", "-u")
+        using WebDavClient webDav = new(new WebDavClientParams()
         {
-            Description = "The username for CardDAV server authentication.",
-        };
-
-        Option<string> passwordOption = new("--password", "-p")
-        {
-            Description = "The password for CardDAV server authentication.",
-        };
-
-        Option<string> webDavEndpointOption = new("--webdav-endpoint", "-e")
-        {
-            Description = "The WebDAV endpoint path relative to the server URL.",
-        };
-
-        RootCommand rootCommand = new();
-        rootCommand.Arguments.Add(outputFileArg);
-        rootCommand.Options.Add(serverOption);
-        rootCommand.Options.Add(usernameOption);
-        rootCommand.Options.Add(passwordOption);
-        ParseResult parseResult = rootCommand.Parse(args);
-
-        using WebDav.WebDavClient webDav = new(new WebDavClientParams()
-        {
-            BaseAddress = new Uri(parseResult.GetRequiredValue(serverOption)),
-            Credentials = new NetworkCredential(parseResult.GetRequiredValue(usernameOption), parseResult.GetRequiredValue(passwordOption)),
+            BaseAddress = new Uri(config.Server),
+            Credentials = new NetworkCredential(config.Username, config.Password),
         });
-    
-        string reqUri = parseResult.GetRequiredValue(webDavEndpointOption);
-        PropfindResponse response = await webDav.Propfind(reqUri);
 
-        if (!response.IsSuccessful)
-            return;
+        Console.WriteLine("Connected.");
 
-        List<Contact> contacts = [];
+        List<string> vcfUrisToFetch = [];
+        ConcurrentBag<Contact> contacts = [];
 
-        foreach (WebDavResource res in response.Resources)
+        foreach (string reqUri in config.WebDavEndpoints)
         {
-            if (res.Uri == reqUri || res.Uri == null)
-                continue;
-            
-            PropfindResponse bookResponse = await webDav.Propfind(res.Uri);
-            if (!bookResponse.IsSuccessful)
-                continue;
+            PropfindResponse response = await webDav.Propfind(reqUri);
 
-            foreach (WebDavResource bookRes in ((PropfindResponse)bookResponse).Resources)
+            if (!response.IsSuccessful)
+                return;
+
+            foreach (WebDavResource res in response.Resources)
             {
-                if (bookRes.ContentType == null || !bookRes.ContentType.StartsWith("text/vcard"))
+                if (res.Uri == reqUri || res.Uri == null)
                     continue;
 
-                WebDavStreamResponse vcardResponse = await webDav.GetProcessedFile(bookRes.Uri);
-                IReadOnlyList<VCard> vCards = Vcf.Deserialize(vcardResponse.Stream);
-                foreach (VCard card in vCards)
+                PropfindResponse bookResponse = await webDav.Propfind(res.Uri);
+                if (!bookResponse.IsSuccessful)
+                    continue;
+
+                foreach (WebDavResource bookRes in bookResponse.Resources)
                 {
-                    if (card.DisplayNames?.FirstOrDefault() == null)
+                    if (bookRes.ContentType == null || !bookRes.ContentType.StartsWith("text/vcard"))
                         continue;
 
-                    if (card.Phones?.FirstOrDefault() == null)
-                        continue;
-
-                    contacts.Add(new Contact()
-                    {
-                        Name = card.DisplayNames.First()!.Value,
-                        Phones = VCardPhonesToPhoneNumbers(card).ToList(),
-                    });
+                    vcfUrisToFetch.Add(bookRes.Uri);
                 }
             }
         }
 
-        await using FileStream outputStream = File.Create(parseResult.GetRequiredValue(outputFileArg));
-        GenerateYealinkPhonebookXml(contacts, outputStream);
+        await Parallel.ForEachAsync(vcfUrisToFetch, 
+            new ParallelOptions()
+            {
+                MaxDegreeOfParallelism = config.MaxNumberOfConnections
+            },
+            async (uri, token) =>
+        {
+            List<Contact> newContacts = await FetchContact(webDav, uri);
+            foreach (Contact newContact in newContacts)
+            {
+                contacts.Add(newContact);
+            }
+        });
+
+        Console.WriteLine("Finished fetching contacts. Generating phonebook xml file...");
+
+        await using FileStream outputStream = File.Create(config.OutputFile);
+        GenerateYealinkPhonebookXml(config, contacts.ToList(), outputStream);
+
+        Console.WriteLine($"Saved phonebook xml file to {config.OutputFile}");
+
+        Console.WriteLine($"Finished in {(DateTime.Now - startTime).TotalSeconds} seconds.");
+
+        if (config.PingUrlWhenFinishedSuccessfully != null)
+        {
+            using HttpClient httpClient = new();
+            await httpClient.GetAsync(config.PingUrlWhenFinishedSuccessfully);
+        }
     }
 
-    private static void GenerateYealinkPhonebookXml(List<Contact> contacts, Stream outputStream)
+    private static async Task<List<Contact>> FetchContact(WebDavClient webDav, string uri)
+    {
+        WebDavStreamResponse vcardResponse = await webDav.GetProcessedFile(uri);
+        IReadOnlyList<VCard> vCards = Vcf.Deserialize(vcardResponse.Stream);
+        
+        List<Contact> contacts = [];
+
+        foreach (VCard card in vCards)
+        {
+            if (card.DisplayNames?.FirstOrDefault() == null)
+                continue;
+
+            if (card.Phones?.FirstOrDefault() == null)
+                continue;
+
+            contacts.Add(new Contact()
+            {
+                Name = card.DisplayNames.First()!.Value,
+                Phones = VCardPhonesToPhoneNumbers(card).ToList(),
+            });
+        }
+
+        return contacts;
+    }
+
+    private static void GenerateYealinkPhonebookXml(Configuration config, List<Contact> contacts, Stream outputStream)
     {
         using StreamWriter writer = new(outputStream);
         writer.WriteLine("<YealinkIPPhoneDirectory>");
 
         foreach (Contact contact in contacts)
         {
-            writer.WriteLine("  <DirectoryEntry>");
-            writer.WriteLine($"    <Name>{System.Security.SecurityElement.Escape(contact.Name)}</Name>");
-
-            foreach (PhoneNumber number in contact.Phones)
+            if (config.SplitContactWhenMultiplePhoneNumbers)
             {
-                writer.WriteLine(
-                    $"    <Telephone>{System.Security.SecurityElement.Escape(number.Number)}</Telephone>");
+                foreach (PhoneNumber number in contact.Phones)
+                {
+                    string namePostfix = string.Empty;
+
+                    if (contact.Phones.Count > 1 && !string.IsNullOrEmpty(number.Type))
+                    {
+                        namePostfix = $" ({number.Type})";
+                    }
+
+                    WriteYealinkDirectoryEntry(writer, contact.Name + namePostfix, [number.Number]);
+                }
             }
-
-            writer.WriteLine("  </DirectoryEntry>");
+            else
+            {
+                WriteYealinkDirectoryEntry(writer, contact.Name, contact.Phones.Select(x => x.Number));
+            }
         }
-
         writer.WriteLine("</YealinkIPPhoneDirectory>");
+    }
+
+    private static void WriteYealinkDirectoryEntry(StreamWriter writer, string name, IEnumerable<string> phoneNumbers)
+    {
+        writer.WriteLine("  <DirectoryEntry>");
+        writer.WriteLine($"    <Name>{System.Security.SecurityElement.Escape(name)}</Name>");
+        foreach (string number in phoneNumbers)
+        {
+            writer.WriteLine($"    <Telephone>{System.Security.SecurityElement.Escape(number)}</Telephone>");
+        }
+        writer.WriteLine("  </DirectoryEntry>");
     }
 
     private static IEnumerable<PhoneNumber> VCardPhonesToPhoneNumbers(VCard vCard)
@@ -134,7 +167,8 @@ internal class Program
                 _ => "",
             };
 
-            phoneType += " ";
+            if(phoneType.Length > 0)
+                phoneType += " ";
 
             phoneType += phone.Parameters.PropertyClass switch
             {

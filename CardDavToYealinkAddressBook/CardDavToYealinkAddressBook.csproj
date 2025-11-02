@@ -9,7 +9,6 @@
 
   <ItemGroup>
     <PackageReference Include="FolkerKinzel.VCards" Version="8.1.1" />
-    <PackageReference Include="System.CommandLine" Version="2.0.0-rc.2.25502.107" />
     <PackageReference Include="WebDav.Client" Version="2.9.0" />
   </ItemGroup>
 
