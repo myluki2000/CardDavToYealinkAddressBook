@@ -44,6 +44,8 @@ jobs:
           path: ${{ matrix.runtime }}.tar.gz
 
   release:
+    permissions:
+      contents: write
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
