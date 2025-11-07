@@ -4,6 +4,7 @@ using FolkerKinzel.VCards.Models.Properties;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using WebDav;
 using static CardDavToYealinkAddressBook.Program;
 
@@ -128,12 +129,12 @@ internal class Program
                         namePostfix = $" ({number.Type})";
                     }
 
-                    WriteYealinkDirectoryEntry(writer, contact.Name + namePostfix, [number.Number]);
+                    WriteYealinkDirectoryEntry(writer, contact.Name + namePostfix, [ModifyPhoneNumber(config, number.Number)]);
                 }
             }
             else
             {
-                WriteYealinkDirectoryEntry(writer, contact.Name, contact.Phones.Select(x => x.Number));
+                WriteYealinkDirectoryEntry(writer, contact.Name, contact.Phones.Select(x => ModifyPhoneNumber(config, x.Number)));
             }
         }
         writer.WriteLine("</YealinkIPPhoneDirectory>");
@@ -184,6 +185,24 @@ internal class Program
                 Type = phoneType,
             };
         }
+    }
+
+    private static string ModifyPhoneNumber(Configuration config, string phoneNumber)
+    {
+        if (config.CountryCode != null)
+        {
+            if (phoneNumber.StartsWith("00"))
+            {
+                return "+" + phoneNumber.Substring("00".Length);
+            }
+            
+            if (Regex.IsMatch(phoneNumber, @"^0[1-9][0-9]*$"))
+            {
+                return "+" + config.CountryCode + phoneNumber.Substring(1);
+            }
+        }
+
+        return phoneNumber;
     }
 
     public class Contact

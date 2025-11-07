@@ -16,5 +16,6 @@ namespace CardDavToYealinkAddressBook
         public int MaxNumberOfConnections { get; set; } = 5;
         public bool SplitContactWhenMultiplePhoneNumbers { get; set; } = false;
         public string? PingUrlWhenFinishedSuccessfully { get; set; }
+        public string? CountryCode { get; set; }
     }
 }
